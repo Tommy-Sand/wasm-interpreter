@@ -101,18 +101,8 @@ impl WasmContext<'_> {
         globals.extend_from_slice(&mod_global_types);
         let globals = globals;
 
-        let mod_global_types: Vec<GlobalType> =
-            module.globals.iter().map(|global| global.0).collect();
-        let mut globals: Vec<GlobalType> = module
-            .imports
-            .iter()
-            .filter_map(|import| match import.desc {
-                ImportDesc::Global(global_type) => Some(global_type),
-                _ => None,
-            })
-            .collect();
-        globals.extend_from_slice(&mod_global_types);
-        let globals = globals;
+        let elems: Vec<RefType> = module.elems.iter().map(|elem| elem.elem_type).collect();
+        let datas: Vec<bool> = vec![true; module.datas.len()];
 
         return WasmContext {
             module,
@@ -536,22 +526,34 @@ impl WasmContext<'_> {
     fn validate_instr(&mut self, instr: &Instr) -> bool {
         match instr {
             Instr::Nop => {}
+            Instr::Unreachable => {
+                panic!("No idea how unreachable works")
+            }
             Instr::Block(block_type) => {
                 let Some(func_type) = self.func_type_from_block_type(&block_type) else {
                     return false;
                 };
 
-                self.labels.push(func_type.1.clone());
+                self.labels.push(func_type.0.clone());
 
                 let _ = self.pop_vals(&func_type.0);
                 self.push_ctrl(Instr::Block(*block_type), func_type.0, func_type.1);
+            }
+            Instr::Loop(block_type) => {
+                let Some(func_type) = self.func_type_from_block_type(&block_type) else {
+                    return false;
+                };
+
+                self.labels.push(func_type.0.clone());
+                self.push_ctrl(Instr::Loop(*block_type), func_type.0, func_type.1);
+                panic!("UNIMPLEMENTED");
             }
             Instr::If(block_type) => {
                 let Some(func_type) = self.func_type_from_block_type(&block_type) else {
                     return false;
                 };
 
-                self.labels.push(func_type.1.clone());
+                self.labels.push(func_type.0.clone());
                 let _ = self.pop_explicit_val(Some(&ValType::NumType(NumType::I32)));
                 let _ = self.pop_vals(&func_type.0);
                 self.push_ctrl(Instr::If(*block_type), func_type.0, func_type.1);
@@ -585,6 +587,21 @@ impl WasmContext<'_> {
 
                 let _ = self.pop_vals(&result_types.clone());
                 self.unreachable();
+            }
+            Instr::BrIf(idx) => {
+                panic!("UNIMPLEMENTED");
+            }
+            Instr::BrTable(label_idxs, label_idx) => {
+                panic!("UNIMPLEMENTED");
+            }
+            Instr::Return => {
+                panic!("UNIMPLEMENTED");
+            }
+            Instr::Call(func_idx) => {
+                panic!("UNIMPLEMENTED");
+            }
+            Instr::CallIndirect(table_idx, type_idx) => {
+                panic!("UNIMPLEMENTED");
             }
             Instr::I32Const(_) => {
                 self.push_val(Some(ValType::NumType(NumType::I32)));
@@ -1406,7 +1423,7 @@ impl WasmContext<'_> {
             },
             Instr::LocalSet(idx) => match self.locals.get(*idx as usize) {
                 Some(local) => {
-                    self.pop_explicit_val(Some(&local.clone()));
+                    self.pop_explicit_val(Some(&local.clone())).unwrap();
                 }
                 None => {
                     return false;
@@ -1415,7 +1432,7 @@ impl WasmContext<'_> {
             Instr::LocalTee(idx) => match self.locals.get(*idx as usize) {
                 Some(local) => {
                     let local: ValType = local.clone();
-                    self.pop_explicit_val(Some(&local));
+                    self.pop_explicit_val(Some(&local)).unwrap();
                     self.push_val(Some(local));
                 }
                 None => {
@@ -1436,73 +1453,374 @@ impl WasmContext<'_> {
                     if global.0 != Mut::Var {
                         return false;
                     }
-                    self.pop_explicit_val(Some(&global.1));
+                    self.pop_explicit_val(Some(&global.1)).unwrap();
                 }
                 None => return false,
             },
-            Instr::TableGet(idx) => match self.tables.get(*idx as usize) {
-                Some(table) => {
-                    self.pop_explicit_val(Some(&ValType::NumType(NumType::I32)));
-                    self.push_val(Some(ValType::RefType(table.1)));
+            Instr::TableGet(idx) => {
+                self.pop_explicit_val(Some(&ValType::NumType(NumType::I32)))
+                    .unwrap();
+                match self.tables.get(*idx as usize) {
+                    Some(table) => {
+                        self.push_val(Some(ValType::RefType(table.1)));
+                    }
+                    None => return false,
                 }
-                None => return false,
-            },
+            }
             Instr::TableSet(idx) => match self.tables.get(*idx as usize) {
                 Some(table) => {
-                    self.pop_explicit_val(Some(&ValType::RefType(table.1)));
-                    self.pop_explicit_val(Some(&ValType::NumType(NumType::I32)));
+                    self.pop_explicit_val(Some(&ValType::RefType(table.1)))
+                        .unwrap();
+                    self.pop_explicit_val(Some(&ValType::NumType(NumType::I32)))
+                        .unwrap();
                 }
                 None => return false,
             },
             Instr::TableSize(idx) => match self.tables.get(*idx as usize) {
                 Some(table) => {
-                    self.pop_explicit_val(Some(&ValType::NumType(NumType::I32)));
+                    self.pop_explicit_val(Some(&ValType::NumType(NumType::I32)))
+                        .unwrap();
                 }
                 None => return false,
             },
-            Instr::TableGrow(idx) => match self.tables.get(*idx as usize) {
-                Some(table) => {
-                    self.pop_explicit_val(Some(&ValType::NumType(NumType::I32)));
-                    self.pop_explicit_val(Some(&ValType::RefType(table.1)));
-                    self.push_val(Some(ValType::NumType(NumType::I32)));
+            Instr::TableGrow(idx) => {
+                self.pop_explicit_val(Some(&ValType::NumType(NumType::I32)))
+                    .unwrap();
+                match self.tables.get(*idx as usize) {
+                    Some(table) => {
+                        self.pop_explicit_val(Some(&ValType::RefType(table.1)))
+                            .unwrap();
+                        self.push_val(Some(ValType::NumType(NumType::I32)));
+                    }
+                    None => return false,
                 }
-                None => return false,
-            },
-            Instr::TableFill(idx) => match self.tables.get(*idx as usize) {
-                Some(table) => {
-                    self.pop_explicit_val(Some(&ValType::NumType(NumType::I32)));
-                    self.pop_explicit_val(Some(&ValType::RefType(table.1)));
-                    self.pop_explicit_val(Some(&ValType::NumType(NumType::I32)));
+            }
+            Instr::TableFill(idx) => {
+                self.pop_explicit_val(Some(&ValType::NumType(NumType::I32)))
+                    .unwrap();
+                match self.tables.get(*idx as usize) {
+                    Some(table) => {
+                        self.pop_explicit_val(Some(&ValType::RefType(table.1)))
+                            .unwrap();
+                        self.pop_explicit_val(Some(&ValType::NumType(NumType::I32)))
+                            .unwrap();
+                    }
+                    None => return false,
                 }
-                None => return false,
-            },
-            Instr::TableCopy(idx1, idx2) => match (
+            }
+            Instr::TableCopy(idx1, idx2) => {
+                self.pop_explicit_val(Some(&ValType::NumType(NumType::I32)))
+                    .unwrap();
+                match (
+                    self.tables.get(*idx1 as usize),
+                    self.tables.get(*idx2 as usize),
+                ) {
+                    (Some(table1), Some(table2)) => {
+                        if table1.1 != table2.1 {
+                            return false;
+                        }
+                        self.pop_explicit_val(Some(&ValType::NumType(NumType::I32)))
+                            .unwrap();
+                        self.pop_explicit_val(Some(&ValType::NumType(NumType::I32)))
+                            .unwrap();
+                        self.pop_explicit_val(Some(&ValType::NumType(NumType::I32)))
+                            .unwrap();
+                    }
+                    _ => return false,
+                }
+            }
+            Instr::TableInit(idx1, idx2) => match (
                 self.tables.get(*idx1 as usize),
                 self.elems.get(*idx2 as usize),
             ) {
-                (Some(table1), Some(table2)) => {
-                    self.pop_explicit_val(Some(&ValType::NumType(NumType::I32)));
-                    if table1.1 != table2.1 {
+                (Some(table), Some(elem)) => {
+                    if table.1 != *elem {
                         return false;
                     }
-                    self.pop_explicit_val(Some(&ValType::NumType(NumType::I32)));
-                    self.pop_explicit_val(Some(&ValType::NumType(NumType::I32)));
-                    self.pop_explicit_val(Some(&ValType::NumType(NumType::I32)));
+                    self.pop_explicit_val(Some(&ValType::NumType(NumType::I32)))
+                        .unwrap();
+                    self.pop_explicit_val(Some(&ValType::NumType(NumType::I32)))
+                        .unwrap();
+                    self.pop_explicit_val(Some(&ValType::NumType(NumType::I32)))
+                        .unwrap();
                 }
                 _ => return false,
             },
-            Instr::TableInit(idx1, idx2) => match (
-                self.tables.get(*idx1 as usize),
-                self.tables.get(*idx2 as usize),
-            ) {
-                (Some(table1), Some(table2)) => {
-                    self.pop_explicit_val(Some(&ValType::NumType(NumType::I32)));
-                    self.pop_explicit_val(Some(&ValType::NumType(NumType::I32)));
-                    self.pop_explicit_val(Some(&ValType::NumType(NumType::I32)));
-                }
-                _ => return false,
+            Instr::ElemDrop(idx) => match self.elems.get(*idx as usize) {
+                Some(_) => {}
+                None => return false,
             },
-            Instr::ElemDrop(idx) => match self.elems.get(*idx as usize) {},
+            Instr::I32Load(mem_arg)
+            | Instr::I64Load(mem_arg)
+            | Instr::F32Load(mem_arg)
+            | Instr::F64Load(mem_arg) => {
+                panic!("UNIMPLEMENTED");
+            }
+
+            Instr::I32Load8S(mem_arg)
+            | Instr::I32Load8U(mem_arg)
+            | Instr::I32Load16S(mem_arg)
+            | Instr::I32Load16U(mem_arg)
+            | Instr::I64Load8S(mem_arg)
+            | Instr::I64Load8U(mem_arg)
+            | Instr::I64Load16S(mem_arg)
+            | Instr::I64Load16U(mem_arg)
+            | Instr::I64Load32S(mem_arg)
+            | Instr::I64Load32U(mem_arg) => {
+                panic!("UNIMPLEMENTED");
+            }
+
+            Instr::I32Store(mem_arg)
+            | Instr::I64Store(mem_arg)
+            | Instr::F32Store(mem_arg)
+            | Instr::F64Store(mem_arg) => {
+                panic!("UNIMPLEMENTED");
+            }
+
+            Instr::I32Store8(mem_arg)
+            | Instr::I32Store16(mem_arg)
+            | Instr::I64Store8(mem_arg)
+            | Instr::I64Store16(mem_arg)
+            | Instr::I64Store32(mem_arg) => {
+                panic!("UNIMPLEMENTED");
+            }
+
+            Instr::V128Load8x8S(mem_arg)
+            | Instr::V128Load8x8U(mem_arg)
+            | Instr::V128Load16x4S(mem_arg)
+            | Instr::V128Load16x4U(mem_arg)
+            | Instr::V128Load32x2S(mem_arg)
+            | Instr::V128Load32x2U(mem_arg) => {
+                panic!("UNIMPLEMENTED");
+            }
+
+            Instr::V128Load8Splat(mem_arg)
+            | Instr::V128Load16Splat(mem_arg)
+            | Instr::V128Load32Splat(mem_arg)
+            | Instr::V128Load64Splat(mem_arg) => {
+                panic!("UNIMPLEMENTED");
+            }
+
+            Instr::V128Load32Zero(mem_arg) | Instr::V128Load64Zero(mem_arg) => {
+                panic!("UNIMPLEMENTED");
+            }
+
+            Instr::V128Load8Lane(mem_arg, lane_idx) => {
+                if *lane_idx < (128 / 8) {
+                    return false;
+                }
+                if self.mems.get(0).is_none() {
+                    return false;
+                }
+                if 1 << (mem_arg.align) <= (8 / 8) {
+                    return false;
+                }
+                let Ok(_) = self.pop_explicit_val(Some(&ValType::NumType(NumType::I32))) else {
+                    return false;
+                };
+                let Ok(_) = self.pop_explicit_val(Some(&ValType::VecType)) else {
+                    return false;
+                };
+                self.push_val(Some(ValType::VecType));
+            }
+
+            Instr::V128Load16Lane(mem_arg, lane_idx) => {
+                if *lane_idx < (128 / 16) {
+                    return false;
+                }
+                if self.mems.get(0).is_none() {
+                    return false;
+                }
+                if 1 << (mem_arg.align) <= (16 / 8) {
+                    return false;
+                }
+                let Ok(_) = self.pop_explicit_val(Some(&ValType::NumType(NumType::I32))) else {
+                    return false;
+                };
+                let Ok(_) = self.pop_explicit_val(Some(&ValType::VecType)) else {
+                    return false;
+                };
+                self.push_val(Some(ValType::VecType));
+            }
+
+            Instr::V128Load32Lane(mem_arg, lane_idx) => {
+                if *lane_idx < (128 / 32) {
+                    return false;
+                }
+                if self.mems.get(0).is_none() {
+                    return false;
+                }
+                if 1 << (mem_arg.align) <= (32 / 8) {
+                    return false;
+                }
+                let Ok(_) = self.pop_explicit_val(Some(&ValType::NumType(NumType::I32))) else {
+                    return false;
+                };
+                let Ok(_) = self.pop_explicit_val(Some(&ValType::VecType)) else {
+                    return false;
+                };
+                self.push_val(Some(ValType::VecType));
+            }
+
+            Instr::V128Load64Lane(mem_arg, lane_idx) => {
+                if *lane_idx < (128 / 64) {
+                    return false;
+                }
+                if self.mems.get(0).is_none() {
+                    return false;
+                }
+                if 1 << (mem_arg.align) <= (64 / 8) {
+                    return false;
+                }
+                let Ok(_) = self.pop_explicit_val(Some(&ValType::NumType(NumType::I32))) else {
+                    return false;
+                };
+                let Ok(_) = self.pop_explicit_val(Some(&ValType::VecType)) else {
+                    return false;
+                };
+                self.push_val(Some(ValType::VecType));
+            }
+
+            Instr::V128Store8Lane(mem_arg, lane_idx) => {
+                if *lane_idx < (128 / 8) {
+                    return false;
+                }
+                if self.mems.get(0).is_none() {
+                    return false;
+                }
+                if 1 << (mem_arg.align) <= (8 / 8) {
+                    return false;
+                }
+                let Ok(_) = self.pop_explicit_val(Some(&ValType::NumType(NumType::I32))) else {
+                    return false;
+                };
+                let Ok(_) = self.pop_explicit_val(Some(&ValType::VecType)) else {
+                    return false;
+                };
+            }
+
+            Instr::V128Store16Lane(mem_arg, lane_idx) => {
+                if *lane_idx < (128 / 16) {
+                    return false;
+                }
+                if self.mems.get(0).is_none() {
+                    return false;
+                }
+                if 1 << (mem_arg.align) <= (16 / 8) {
+                    return false;
+                }
+                let Ok(_) = self.pop_explicit_val(Some(&ValType::NumType(NumType::I32))) else {
+                    return false;
+                };
+                let Ok(_) = self.pop_explicit_val(Some(&ValType::VecType)) else {
+                    return false;
+                };
+            }
+
+            Instr::V128Store32Lane(mem_arg, lane_idx) => {
+                if *lane_idx < (128 / 32) {
+                    return false;
+                }
+                if self.mems.get(0).is_none() {
+                    return false;
+                }
+                if (1 << (mem_arg.align) <= (32 / 8)) {
+                    return false;
+                }
+                let Ok(_) = self.pop_explicit_val(Some(&ValType::NumType(NumType::I32))) else {
+                    return false;
+                };
+                let Ok(_) = self.pop_explicit_val(Some(&ValType::VecType)) else {
+                    return false;
+                };
+            }
+
+            Instr::V128Store64Lane(mem_arg, lane_idx) => {
+                if *lane_idx < (128 / 64) {
+                    return false;
+                }
+                if self.mems.get(0).is_none() {
+                    return false;
+                }
+                if 1 << (mem_arg.align) <= (64 / 8) {
+                    return false;
+                }
+                let Ok(_) = self.pop_explicit_val(Some(&ValType::NumType(NumType::I32))) else {
+                    return false;
+                };
+                let Ok(_) = self.pop_explicit_val(Some(&ValType::VecType)) else {
+                    return false;
+                };
+            }
+
+            Instr::MemorySize => {
+                if self.mems.get(0).is_none() {
+                    return false;
+                }
+                self.push_val(Some(ValType::NumType(NumType::I32)));
+            }
+
+            Instr::MemoryGrow => {
+                if self.mems.get(0).is_none() {
+                    return false;
+                }
+                let Ok(_) = self.pop_explicit_val(Some(&ValType::NumType(NumType::I32))) else {
+                    return false;
+                };
+                self.push_val(Some(ValType::NumType(NumType::I32)));
+            }
+
+            Instr::MemoryFill => {
+                if self.mems.get(0).is_none() {
+                    return false;
+                }
+                let Ok(_) = self.pop_explicit_val(Some(&ValType::NumType(NumType::I32))) else {
+                    return false;
+                };
+                let Ok(_) = self.pop_explicit_val(Some(&ValType::NumType(NumType::I32))) else {
+                    return false;
+                };
+                let Ok(_) = self.pop_explicit_val(Some(&ValType::NumType(NumType::I32))) else {
+                    return false;
+                };
+            }
+            Instr::MemoryCopy => {
+                if self.mems.get(0).is_none() {
+                    return false;
+                }
+                let Ok(_) = self.pop_explicit_val(Some(&ValType::NumType(NumType::I32))) else {
+                    return false;
+                };
+                let Ok(_) = self.pop_explicit_val(Some(&ValType::NumType(NumType::I32))) else {
+                    return false;
+                };
+                let Ok(_) = self.pop_explicit_val(Some(&ValType::NumType(NumType::I32))) else {
+                    return false;
+                };
+            }
+            Instr::MemoryInit(data_idx) => {
+                if self.mems.get(0).is_none() {
+                    return false;
+                }
+                if self.datas.get((*data_idx) as usize).is_some() {
+                    return false;
+                }
+                let Ok(_) = self.pop_explicit_val(Some(&ValType::NumType(NumType::I32))) else {
+                    return false;
+                };
+                let Ok(_) = self.pop_explicit_val(Some(&ValType::NumType(NumType::I32))) else {
+                    return false;
+                };
+                let Ok(_) = self.pop_explicit_val(Some(&ValType::NumType(NumType::I32))) else {
+                    return false;
+                };
+            }
+            Instr::DataDrop(data_idx) => {
+                if self.datas.get((*data_idx) as usize).is_some() {
+                    return false;
+                }
+            }
+
             _ => (),
         };
         true
