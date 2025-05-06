@@ -527,14 +527,15 @@ impl WasmContext<'_> {
         match instr {
             Instr::Nop => {}
             Instr::Unreachable => {
-                panic!("No idea how unreachable works")
+                self.unreachable();
+                panic!("No idea how unreachable works");
             }
             Instr::Block(block_type) => {
                 let Some(func_type) = self.func_type_from_block_type(&block_type) else {
                     return false;
                 };
 
-                self.labels.push(func_type.0.clone());
+                self.labels.push(func_type.1.clone());
 
                 let _ = self.pop_vals(&func_type.0);
                 self.push_ctrl(Instr::Block(*block_type), func_type.0, func_type.1);
@@ -545,8 +546,8 @@ impl WasmContext<'_> {
                 };
 
                 self.labels.push(func_type.0.clone());
+                self.pop_vals(&func_type.0);
                 self.push_ctrl(Instr::Loop(*block_type), func_type.0, func_type.1);
-                panic!("UNIMPLEMENTED");
             }
             Instr::If(block_type) => {
                 let Some(func_type) = self.func_type_from_block_type(&block_type) else {
@@ -589,19 +590,69 @@ impl WasmContext<'_> {
                 self.unreachable();
             }
             Instr::BrIf(idx) => {
-                panic!("UNIMPLEMENTED");
+                self.pop_explicit_val(Some(&ValType::NumType(NumType::I32)));
+                if ((self.ctrl_stack.len() as i64) - 1 - (*idx as i64)) < 0 {
+                    return false;
+                }
+                let labels_len = self.labels.len() - 1;
+                let Some(label) = self.labels.get(labels_len - *idx as usize) else {
+                    return false;
+                };
+                let label = label.to_vec();
+
+                let _ = self.pop_vals(&label);
+                self.push_vals(label.to_vec());
             }
             Instr::BrTable(label_idxs, label_idx) => {
-                panic!("UNIMPLEMENTED");
+                self.pop_explicit_val(Some(&ValType::NumType(NumType::I32)));
+
+                for label_idx in label_idxs {
+                    let Some(label) = self.labels.get(*label_idx as usize) else {
+                        return false;
+                    };
+                    let label = label.to_vec();
+
+                    self.pop_vals(&label);
+                    self.push_vals(label);
+                }
+
+                let Some(label) = self.labels.get(*label_idx as usize) else {
+                    return false;
+                };
+                let label = label.to_vec();
+                self.pop_vals(&label);
+                self.unreachable();
             }
             Instr::Return => {
-                panic!("UNIMPLEMENTED");
+                let Some(returns) = self.returns.take() else {
+                    return false;
+                };
+                let _ = self.pop_vals(&returns);
+                self.pop_ctrl();
             }
             Instr::Call(func_idx) => {
-                panic!("UNIMPLEMENTED");
+                let Some(func_type) = self.funcs.get(*func_idx as usize) else {
+                    return false;
+                };
+                let func_type = func_type.clone();
+
+                let _ = self.pop_vals(&func_type.0);
+                self.push_vals(func_type.1);
             }
             Instr::CallIndirect(table_idx, type_idx) => {
-                panic!("UNIMPLEMENTED");
+                let _ = self.pop_explicit_val(Some(&ValType::NumType(NumType::I32)));
+
+                let Some(TableType(_, RefType::FuncRef)) = self.tables.get(*table_idx as usize)
+                else {
+                    return false;
+                };
+                let Some(func_type) = self.module.types.get(*type_idx as usize) else {
+                    return false;
+                };
+                let func_type = func_type.clone();
+
+                let _ = self.pop_vals(&func_type.0);
+                self.push_vals(func_type.1);
             }
             Instr::I32Const(_) => {
                 self.push_val(Some(ValType::NumType(NumType::I32)));
@@ -1820,20 +1871,10 @@ impl WasmContext<'_> {
                     return false;
                 }
             }
-
             _ => (),
         };
         true
     }
-
-    /*
-    fn validate_br_table(&self) {
-        if self.labels.len() < ln {
-            return false;
-        }
-
-    }
-    */
 
     fn validate_call_indirect(&self, (x, y): (TableIdx, TypeIdx)) -> bool {
         let Some(TableType(limits, ref_type)) = self.module.tables.get(x as usize) else {
